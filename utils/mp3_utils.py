@@ -3,8 +3,12 @@ from distutils.command.bdist_wininst import bdist_wininst
 from logging.handlers import WatchedFileHandler
 import numpy as np
 import soundfile as sf
+import pydub
 from pydub import AudioSegment
 from pydub.utils import get_array_type
+import threading
+import soundcard as sc
+import math
 
 def read_mp3(filename):
     sound = AudioSegment.from_mp3(filename)
@@ -15,8 +19,8 @@ def read_mp3(filename):
     right = sound.split_to_mono()[1]
 
     bit_depth = left.sample_width * 8
-    print("byte_depth: ", left.sample_width)
-    print("bit_depth: ",bit_depth)
+    # print("byte_depth: ", left.sample_width)
+    # print("bit_depth: ",bit_depth)
     array_type = get_array_type(bit_depth)
     left_numeric_array = array.array(array_type, left._data)
     right_numeric_array = array.array(array_type, right._data)
@@ -25,20 +29,20 @@ def read_mp3(filename):
     # the max = pow(2,15)-1
     # the min = 1-pow(2,15)
     # so divide by pow(2,15) to normalize the data
-    left_channel = np.array(left_numeric_array) / 32768
-    right_channel = np.array(right_numeric_array) / 32768
+    left_channel = np.array(left_numeric_array) / math.pow(2,bit_depth-1)
+    right_channel = np.array(right_numeric_array) / math.pow(2,bit_depth-1)
     wave_data = np.vstack([left_channel,right_channel])
     # sf.write('Test.wav', wave_data.T, 44100)
     # 在数字音频中，44,100 Hz（交替代表为44.1 kHz）是一个常见的采样频率。
     # 模拟音频通常是通过对每秒44,100次采样来记录的，然后使用这些样品在播放时重建音频信号。
-    return wave_data, left_channel, right_channel
+    return wave_data.T, left_channel, right_channel
 
 def get_profile_mp3(filename):
     sound = AudioSegment.from_mp3(filename)
     channel_count = sound.channels
     print("channel_count: ",channel_count)
-    frames_per_second = sound.frame_rate
-    print("frames_per_second: ",frames_per_second)
+    frame_rate = sound.frame_rate
+    print("frame_rate: ",frame_rate)
     duration_seconds = sound.duration_seconds
     print("duration_seconds: ",sound.duration_seconds)
     # print((len(sound) / 1000.0))
@@ -47,7 +51,7 @@ def get_profile_mp3(filename):
     # print("raw_audio_data: ",raw_audio_data)
     bytes_per_frame = sound.frame_width
     print("bytes_per_frame: ",bytes_per_frame)
-    print("frame_count: ",frames_per_second*duration_seconds)
+    print("frame_count: ",frame_rate*duration_seconds)
 
     # print(type(wav_data[0]))
     print("wav_data_array_type: ",wav_data.typecode," ",wav_data.itemsize) # int 2 bytes
@@ -102,8 +106,51 @@ def mp3_to_wav(mp3_filename,wav_filename,frame_rate):
     mp3_file = AudioSegment.from_mp3(file=mp3_filename)
     mp3_file.set_frame_rate(frame_rate).export(wav_filename,format="wav")
 
+def write_mp3(f,fr,sw,x,normalized=False):
+    channels = 2 if (x.ndim == 2 and x.shape[1] == 2) else 1
+
+    if normalized:
+        if sw == 1:
+            y = np.int8(x*math.pow(2,7))
+        elif sw == 2:
+            y = np.int16(x*math.pow(2,15))
+    else:
+        if sw == 1:
+            y = np.int8(x)
+        elif sw == 2:
+            y = np.int16(x)
+    
+    song = pydub.AudioSegment(y.tobytes(), frame_rate=fr, sample_width=sw, channels=channels)
+    song.export(f, format="mp3",bitrate="320k")
+
+def simplify_np(wave_data,fr,present_second,mode):
+    # 每 fr * present_second 的音相同
+    # mode: "high","middle","low"
+
+    margin = int(present_second*fr)
+    wave_frame_count = wave_data.shape[0] - margin
+    start = 0
+    end = margin
+    while(wave_frame_count > 0):
+        wave_frame_count -= margin
+        if mode == "middle":
+            wave_data[start:end] = (wave_data[start:end].max() + wave_data[start:end].min())/2
+        elif mode == "high":
+            wave_data[start:end] = wave_data[start:end].max()
+        elif mode == "low":
+            wave_data[start:end] = wave_data[start:end].min()
+        start = end
+        end += margin
+    wave_data[-(wave_frame_count+margin):] = (wave_data[-(wave_frame_count+margin):].max()-wave_data[-(wave_frame_count+margin):].min())/2
+    return wave_data
+
 test_path = "F:\\repos\\composer\\mp3_sample\\Whirling_In_Rags.mp3"
 mp3_profile = get_profile_mp3(test_path)
-data = read_mp3(test_path)
-
+wave_data, left_channel, right_channel = read_mp3(test_path)
+print(wave_data.shape)
+# print(wave_data[:100])
+wave_data = simplify_np(wave_data,44100,0.0001,"high")
+# print(wave_data[:100])
+write_mp3('..\\mp3_sample\\out.mp3',44100,1,wave_data,normalized=True)
+# print(wave_data.ndim)
 # save_frame(test_path)
